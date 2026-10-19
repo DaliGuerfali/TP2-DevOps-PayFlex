@@ -21,7 +21,7 @@ on:
           - perf-critical  # latence ~700 ms -> p95 > 500 ms -> erreur critique
           - data-leak      # secrets + PAN injectés dans l'artefact -> taux de confidentialité < 100 %
 
-run-name: "PayFlex CI/CD · ${{ inputs.scenario || 'nominal' }} · ${{ github.event.head_commit.message || github.ref_name }}"
+run-name: "PayFlex CI/CD · scénario ${{ inputs.scenario || 'nominal' }} · ${{ github.event_name }}"
 
 concurrency:
   group: payflex-${{ github.ref }}-${{ inputs.scenario || 'nominal' }}
