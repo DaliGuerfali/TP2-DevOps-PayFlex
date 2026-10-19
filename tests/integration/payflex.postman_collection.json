@@ -1,0 +1,265 @@
+{
+  "info": {
+    "name": "PayFlex API - Integration scenario",
+    "description": "Scénario d'intégration exécuté par Newman contre le conteneur Docker éphémère : santé, ouverture de comptes, dépôt, virement, règles métier et validation de carte (PII masquée).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('responds in less than 2s', () => pm.expect(pm.response.responseTime).to.be.below(2000));",
+          "pm.test('responds with JSON', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'));"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - Health check",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health" },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('service is UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 - Open account Alice (initial balance 1000)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/accounts",
+        "body": { "mode": "raw", "raw": "{\"owner\": \"Alice Martin\", \"currency\": \"EUR\", \"initialBalance\": 1000}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('status 201', () => pm.response.to.have.status(201));",
+              "pm.test('contract: id, owner, currency, balance, createdAt', () => {",
+              "  pm.expect(body).to.have.all.keys('id', 'owner', 'currency', 'balance', 'createdAt');",
+              "  pm.expect(body.id).to.match(/^acc_/);",
+              "  pm.expect(body.balance).to.eql(1000);",
+              "});",
+              "pm.collectionVariables.set('aliceId', body.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Open account Bob (empty)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/accounts",
+        "body": { "mode": "raw", "raw": "{\"owner\": \"Bob Durand\"}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 201', () => pm.response.to.have.status(201));",
+              "pm.test('defaults: EUR and balance 0', () => {",
+              "  pm.expect(pm.response.json().currency).to.eql('EUR');",
+              "  pm.expect(pm.response.json().balance).to.eql(0);",
+              "});",
+              "pm.collectionVariables.set('bobId', pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Deposit 250 on Alice",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/accounts/{{aliceId}}/deposits",
+        "body": { "mode": "raw", "raw": "{\"amount\": 250}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 201', () => pm.response.to.have.status(201));",
+              "pm.test('balance is 1250', () => pm.expect(pm.response.json().account.balance).to.eql(1250));",
+              "pm.test('transaction is a DEPOSIT', () => pm.expect(pm.response.json().transaction.type).to.eql('DEPOSIT'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - Transfer 500 Alice -> Bob (fee 2.50)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/transfers",
+        "body": { "mode": "raw", "raw": "{\"fromAccountId\": \"{{aliceId}}\", \"toAccountId\": \"{{bobId}}\", \"amount\": 500}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('status 201', () => pm.response.to.have.status(201));",
+              "pm.test('fee is 0.5% = 2.50', () => pm.expect(body.transaction.fee).to.eql(2.5));",
+              "pm.test('Alice debited amount + fee', () => pm.expect(body.from.balance).to.eql(747.5));",
+              "pm.test('Bob credited amount', () => pm.expect(body.to.balance).to.eql(500));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Data flow: Bob's transactions contain the transfer",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/accounts/{{bobId}}/transactions" },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const items = pm.response.json().items;",
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('one TRANSFER from Alice', () => {",
+              "  pm.expect(items).to.have.lengthOf(1);",
+              "  pm.expect(items[0].type).to.eql('TRANSFER');",
+              "  pm.expect(items[0].accountId).to.eql(pm.collectionVariables.get('aliceId'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Business rule: insufficient funds -> 422",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/transfers",
+        "body": { "mode": "raw", "raw": "{\"fromAccountId\": \"{{bobId}}\", \"toAccountId\": \"{{aliceId}}\", \"amount\": 10000}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 422', () => pm.response.to.have.status(422));",
+              "pm.test('error code INSUFFICIENT_FUNDS', () => pm.expect(pm.response.json().error.code).to.eql('INSUFFICIENT_FUNDS'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Validation: negative amount -> 400",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/accounts/{{aliceId}}/deposits",
+        "body": { "mode": "raw", "raw": "{\"amount\": -20}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));",
+              "pm.test('error code VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 - Unknown account -> 404",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/accounts/acc_does_not_exist" },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.test('status 404', () => pm.response.to.have.status(404));"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 - Card validation returns a masked PAN only",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/payments/cards/validate",
+        "body": { "mode": "raw", "raw": "{\"cardNumber\": \"4111 1111 1111 1111\"}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('card is valid visa', () => {",
+              "  pm.expect(body.valid).to.eql(true);",
+              "  pm.expect(body.brand).to.eql('visa');",
+              "});",
+              "pm.test('confidentiality: full PAN never returned', () => {",
+              "  pm.expect(body.maskedNumber).to.eql('**** **** **** 1111');",
+              "  pm.expect(pm.response.text()).to.not.include('41111111');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 - Card validation rejects a bad checksum",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/payments/cards/validate",
+        "body": { "mode": "raw", "raw": "{\"cardNumber\": \"4111 1111 1111 1112\"}" }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('reason CHECKSUM_FAILED', () => pm.expect(pm.response.json().reason).to.eql('CHECKSUM_FAILED'));"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "aliceId", "value": "" },
+    { "key": "bobId", "value": "" }
+  ]
+}

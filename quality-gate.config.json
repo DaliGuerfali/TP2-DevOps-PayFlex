@@ -1,0 +1,23 @@
+{
+  "coverage": {
+    "metric": "lines",
+    "warningBelowPct": 80,
+    "criticalBelowPct": 70
+  },
+  "performance": {
+    "p95TargetMs": 200,
+    "p95CriticalMs": 500,
+    "errorRateTarget": 0.01,
+    "errorRateCritical": 0.02
+  },
+  "confidentiality": {
+    "maxToleratedLeaks": 0,
+    "requiredRatePct": 100
+  },
+  "codeQuality": {
+    "criticalSeverities": ["BLOCKER", "CRITICAL"]
+  },
+  "integration": {
+    "maxFailedAssertions": 0
+  }
+}

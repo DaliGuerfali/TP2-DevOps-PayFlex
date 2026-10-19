@@ -1,0 +1,11 @@
+node_modules
+coverage
+reports
+metrics
+artifact-fs
+.scannerwork
+.git
+.github
+tests
+docs
+*.md

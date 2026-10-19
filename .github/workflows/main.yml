@@ -1,0 +1,391 @@
+name: PayFlex CI/CD
+
+# Pipeline CI/CD intelligent de PayFlex API.
+# Chaque étape produit un indicateur classé OK / WARNING (non-critique : le pipeline
+# continue avec une alerte) / CRITICAL (fail fast : les étapes suivantes et le
+# déploiement sont annulés et un rapport d'incident est généré).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Scénario de démonstration"
+        type: choice
+        default: nominal
+        options:
+          - nominal        # tout est au vert -> déploiement
+          - perf-warning   # latence ~250 ms -> avertissement non-critique, déploiement maintenu
+          - perf-critical  # latence ~700 ms -> p95 > 500 ms -> erreur critique
+          - data-leak      # secrets + PAN injectés dans l'artefact -> taux de confidentialité < 100 %
+
+run-name: "PayFlex CI/CD · ${{ inputs.scenario || 'nominal' }} · ${{ github.event.head_commit.message || github.ref_name }}"
+
+concurrency:
+  group: payflex-${{ github.ref }}-${{ inputs.scenario || 'nominal' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SCENARIO: ${{ inputs.scenario || 'nominal' }}
+  SIMULATED_LATENCY_MS: ${{ (inputs.scenario == 'perf-critical' && '700') || (inputs.scenario == 'perf-warning' && '250') || '0' }}
+  NODE_VERSION: "22"
+  IMAGE: payflex-api:${{ github.sha }}
+  GITLEAKS_VERSION: "8.21.2"
+  K6_IMAGE: grafana/k6:0.54.0
+  SONAR_IMAGE_SCANNER: sonarsource/sonar-scanner-cli:11.1
+  FORCE_COLOR: "1"
+
+jobs:
+  # ---------------------------------------------------------------- Étape 2 (source)
+  secrets-scan:
+    name: "🔐 Confidentialité · source, config & historique Git"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Scan de l'historique Git (tous les commits)
+        run: gitleaks git --config .gitleaks.toml --redact --exit-code 0 --report-format json --report-path reports/gitleaks-history.json .
+      - name: Scan du code source et des fichiers de configuration
+        run: gitleaks dir --config .gitleaks.toml --redact --exit-code 0 --report-format json --report-path reports/gitleaks-source.json .
+      - name: "Quality Gate · taux de confidentialité (source)"
+        run: >
+          node scripts/quality-gate/evaluate.js confidentiality --stage source
+          --location "historique git" --location "code source" --location "configuration"
+          --out metrics/confidentiality-source.json
+          reports/gitleaks-history.json reports/gitleaks-source.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-confidentiality-source
+          path: metrics/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-secrets-scan
+          path: reports/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Étape 1 (UT)
+  unit-tests:
+    name: "🧪 Tests unitaires & couverture (Jest)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Jest + rapport de couverture
+        run: npx jest --ci --coverage
+      - name: "Quality Gate · couverture (warning < 80 %, critique < 70 %)"
+        run: node scripts/quality-gate/evaluate.js coverage --stage unit-tests --out metrics/coverage.json coverage/coverage-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-coverage
+          path: metrics/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Étape 3 (SonarQube)
+  sonarqube:
+    name: "🔎 Analyse statique (SonarQube Community)"
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    services:
+      sonarqube:
+        image: sonarqube:10.6-community
+        ports:
+          - 9000:9000
+        env:
+          SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    env:
+      SONAR_HOST_URL: http://localhost:9000
+      SONAR_PROJECT_KEY: payflex-api
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage
+      - name: Préparer SonarQube (projet, Quality Gate "PayFlex Gate", jeton)
+        run: bash scripts/sonar/provision.sh
+      - name: Analyse SonarScanner
+        run: |
+          docker run --rm --network host \
+            -e SONAR_HOST_URL -e SONAR_TOKEN \
+            -v "$GITHUB_WORKSPACE:/usr/src" \
+            "$SONAR_IMAGE_SCANNER" -Dsonar.projectVersion="${GITHUB_SHA::7}"
+      - name: Récupérer Quality Gate, mesures et issues bloquantes
+        run: node scripts/sonar/fetch-results.js reports/sonar.json
+      - name: "Quality Gate · bugs bloquants (critique) / code smells (warning)"
+        run: node scripts/quality-gate/evaluate.js code-quality --stage sonarqube --out metrics/code-quality.json reports/sonar.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-code-quality
+          path: metrics/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-sonarqube
+          path: reports/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Build + Étape 2 (artefact)
+  build:
+    name: "📦 Build de l'image Docker & scan de l'artefact"
+    needs: [secrets-scan, unit-tests, sonarqube]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: "[Démo data-leak] Injection de secrets factices dans le build"
+        if: env.SCENARIO == 'data-leak'
+        run: bash scripts/demo/inject-leak.sh
+      - name: Build de l'image
+        run: docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$IMAGE" .
+      - name: Extraire le système de fichiers de l'artefact
+        run: |
+          cid=$(docker create "$IMAGE")
+          mkdir -p artifact-fs
+          docker export "$cid" | tar -x -C artifact-fs app
+          docker rm "$cid" > /dev/null
+          docker image inspect "$IMAGE" --format '{{json .Config}}' > artifact-fs/image-config.json
+          echo "Fichiers de l'artefact : $(find artifact-fs -type f | wc -l)"
+      - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Scan de l'artefact (image Docker + configuration de l'image)
+        run: gitleaks dir --config .gitleaks.toml --redact --exit-code 0 --report-format json --report-path reports/gitleaks-artifact.json artifact-fs
+      - name: "Quality Gate · taux de confidentialité (artefact)"
+        run: >
+          node scripts/quality-gate/evaluate.js confidentiality --stage artifact
+          --location "image Docker /app" --location "config de l'image"
+          --out metrics/confidentiality-artifact.json reports/gitleaks-artifact.json
+      - name: Sauvegarder l'image validée
+        run: docker save "$IMAGE" | gzip > payflex-image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: payflex-image.tar.gz
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-confidentiality-artifact
+          path: metrics/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-build
+          path: reports/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Étape 1 (IT)
+  integration-tests:
+    name: "🔗 Tests d'intégration (conteneur éphémère + Newman)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Démarrer l'API dans un conteneur éphémère
+        run: |
+          gunzip -c payflex-image.tar.gz | docker load
+          docker run -d --name payflex -p 3000:3000 -e SIMULATED_LATENCY_MS "$IMAGE"
+          for i in $(seq 1 30); do curl -fs http://localhost:3000/health && break; sleep 1; done
+      - name: Scénario API Newman
+        run: |
+          npx --yes newman@6 run tests/integration/payflex.postman_collection.json \
+            -e tests/integration/local.postman_environment.json \
+            --reporters cli,json,junit \
+            --reporter-json-export reports/newman.json \
+            --reporter-junit-export reports/newman-junit.xml || echo "newman a signalé des échecs"
+      - name: "Quality Gate · contrats d'API"
+        run: node scripts/quality-gate/evaluate.js integration --stage integration-tests --out metrics/integration.json reports/newman.json
+      - name: Collecter les logs du conteneur
+        if: always()
+        run: docker logs payflex > reports/container.log 2>&1 || true
+      - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Scan des logs applicatifs (fuite de PII / secrets dans les logs)
+        run: gitleaks dir --config .gitleaks.toml --redact --exit-code 0 --report-format json --report-path reports/gitleaks-logs.json reports/container.log
+      - name: "Quality Gate · taux de confidentialité (logs)"
+        run: >
+          node scripts/quality-gate/evaluate.js confidentiality --stage logs --location "logs du conteneur"
+          --out metrics/confidentiality-logs.json reports/gitleaks-logs.json
+      - name: Arrêter le conteneur
+        if: always()
+        run: docker rm -f payflex || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-integration
+          path: metrics/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-integration
+          path: reports/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Étape 1 (PT)
+  performance-tests:
+    name: "⚡ Tests de performance (k6)"
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Démarrer l'API (latence simulée = ${{ env.SIMULATED_LATENCY_MS }} ms)
+        run: |
+          gunzip -c payflex-image.tar.gz | docker load
+          docker run -d --name payflex -p 3000:3000 -e SIMULATED_LATENCY_MS -e LOG_LEVEL=warn "$IMAGE"
+          for i in $(seq 1 30); do curl -fs http://localhost:3000/health && break; sleep 1; done
+      - name: Tir de charge k6 (p95 < 200 ms visé, abort si p95 > 500 ms ou erreurs > 2 %)
+        run: |
+          mkdir -p reports && chmod 777 reports
+          docker run --rm --network host -v "$PWD/tests/performance:/scripts:ro" -v "$PWD/reports:/out" \
+            -e BASE_URL=http://localhost:3000 -e SUMMARY_PATH=/out/k6-summary.json \
+            "$K6_IMAGE" run /scripts/load-test.js || echo "k6 exit code $? (seuil franchi)"
+      - name: "Quality Gate · performance (warning p95 200-500 ms, critique > 500 ms ou erreurs > 2 %)"
+        run: node scripts/quality-gate/evaluate.js performance --stage performance-tests --out metrics/performance.json reports/k6-summary.json
+      - name: Arrêter le conteneur
+        if: always()
+        run: docker rm -f payflex || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-performance
+          path: metrics/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-performance
+          path: reports/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- Étapes 3 & 4
+  quality-gate:
+    name: "🚦 Quality Gate & rapport d'analyse"
+    needs: [secrets-scan, unit-tests, sonarqube, build, integration-tests, performance-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: metrics-*
+          path: metrics
+          merge-multiple: true
+      - name: Classification Critique / Non-critique
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/quality-gate/report.js --mode gate --metrics metrics --out reports
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-gate-report
+          path: reports/
+
+  deploy:
+    name: "🚀 Déploiement (production simulée)"
+    needs: quality-gate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Publier la release validée
+        run: |
+          gunzip -c payflex-image.tar.gz | docker load
+          docker tag "$IMAGE" payflex-api:production
+          docker image ls payflex-api
+          {
+            echo "## 🚀 Déploiement effectué"
+            echo ""
+            echo "Image \`$IMAGE\` promue en \`payflex-api:production\` (scénario \`$SCENARIO\`)."
+            echo "Tous les contrôles critiques sont passés : tests, couverture, SonarQube, confidentialité, performance."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- Étape 4 (rapport d'incident)
+  incident-report:
+    name: "🚨 Rapport d'incident (pipeline interrompu)"
+    needs: [secrets-scan, unit-tests, sonarqube, build, integration-tests, performance-tests, quality-gate]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: metrics-*
+          path: metrics
+          merge-multiple: true
+      - name: Générer le rapport d'incident
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node scripts/quality-gate/report.js --mode incident --metrics metrics --out reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: incident-report
+          path: reports/

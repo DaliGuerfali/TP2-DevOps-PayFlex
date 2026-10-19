@@ -1,0 +1,41 @@
+title = "PayFlex API - Gitleaks configuration"
+
+# Keep every built-in Gitleaks rule (AWS, GCP, Stripe, GitHub tokens, private keys,
+# JWT, generic API keys...) and add PayFlex-specific PII rules on top.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "payment-card-number"
+description = "Payment card number (PAN) - PII / PCI-DSS data"
+regex = '''\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2})(?:[ -]?\d{4}){2}[ -]?\d{3,4}\b'''
+tags = ["pii", "pci"]
+
+  # Public sandbox numbers published by card networks for testing are not PII.
+  [rules.allowlist]
+  description = "Well-known public test card numbers"
+  regexTarget = "match"
+  regexes = [
+    '''4111[ -]?1111[ -]?1111[ -]?111[12]''',
+    '''4242[ -]?4242[ -]?4242[ -]?4242''',
+    '''5555[ -]?5555[ -]?5555[ -]?4444''',
+    '''2223[ -]?0031[ -]?2200[ -]?3222''',
+    '''3782[ -]?822463[ -]?10005''',
+    '''378282246310005''',
+  ]
+
+[[rules]]
+id = "iban"
+description = "IBAN bank account number - PII"
+regex = '''\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b'''
+keywords = ["iban"]
+tags = ["pii"]
+
+[allowlist]
+description = "Lock files and known third-party false positives"
+paths = [
+  '''(^|[\\/])package-lock\.json$''',
+  '''(^|[\\/])coverage[\\/]''',
+  # Public Coveralls CI token committed by the upstream `debug` package (dependency of express).
+  '''node_modules[\\/]debug[\\/]\.coveralls\.yml$''',
+]

@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+reports/
+metrics/
+artifact-fs/
+.scannerwork/
+*.tar.gz
+*.log

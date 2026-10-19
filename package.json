@@ -1,0 +1,42 @@
+{
+  "name": "payflex-api",
+  "version": "1.0.0",
+  "description": "PayFlex API - API REST de services financiers servant de cible au pipeline CI/CD (TP2 DevOps Avancé)",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:integration": "newman run tests/integration/payflex.postman_collection.json -e tests/integration/local.postman_environment.json",
+    "test:perf": "k6 run tests/performance/load-test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "Dali Guerfali",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "roots": [
+      "<rootDir>/tests/unit"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "!src/server.js"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "json-summary"
+    ]
+  }
+}
