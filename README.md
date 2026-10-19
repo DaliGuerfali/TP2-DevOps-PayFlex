@@ -7,6 +7,8 @@ avec tests multi-niveaux, analyse SonarQube, détection de fuites de données (G
 Quality Gate qui classe chaque erreur en **critique** (arrêt immédiat, pas de déploiement) ou
 **non-critique** (alerte, le pipeline continue).
 
+**Équipe :** Mohamed Ali Guerfali · Adem Saidi · Ala Eddine Zaouali · Rami Gharbi
+
 📄 **Rapport de synthèse : [docs/Rapport-de-synthese-TP2-DevOps.pdf](docs/Rapport-de-synthese-TP2-DevOps.pdf)**
 
 ## Architecture du pipeline
