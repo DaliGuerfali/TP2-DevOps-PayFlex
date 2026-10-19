@@ -54,7 +54,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
         run: |
-          mkdir -p "$RUNNER_TEMP/bin"
+          mkdir -p "$RUNNER_TEMP/bin" reports metrics
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP/bin" gitleaks
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -142,7 +142,7 @@ jobs:
           docker run --rm --network host \
             -e SONAR_HOST_URL -e SONAR_TOKEN \
             -v "$GITHUB_WORKSPACE:/usr/src" \
-            "$SONAR_IMAGE_SCANNER" -Dsonar.projectVersion="${GITHUB_SHA::7}"
+            "$SONAR_IMAGE_SCANNER" -Dsonar.projectVersion="${GITHUB_SHA::7}" -Dsonar.working.directory=/usr/src/.scannerwork
       - name: Récupérer Quality Gate, mesures et issues bloquantes
         run: node scripts/sonar/fetch-results.js reports/sonar.json
       - name: "Quality Gate · bugs bloquants (critique) / code smells (warning)"
@@ -185,7 +185,7 @@ jobs:
           echo "Fichiers de l'artefact : $(find artifact-fs -type f | wc -l)"
       - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
         run: |
-          mkdir -p "$RUNNER_TEMP/bin"
+          mkdir -p "$RUNNER_TEMP/bin" reports metrics
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP/bin" gitleaks
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -231,6 +231,7 @@ jobs:
           name: docker-image
       - name: Démarrer l'API dans un conteneur éphémère
         run: |
+          mkdir -p reports metrics
           gunzip -c payflex-image.tar.gz | docker load
           docker run -d --name payflex -p 3000:3000 -e SIMULATED_LATENCY_MS "$IMAGE"
           for i in $(seq 1 30); do curl -fs http://localhost:3000/health && break; sleep 1; done
@@ -248,7 +249,7 @@ jobs:
         run: docker logs payflex > reports/container.log 2>&1 || true
       - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
         run: |
-          mkdir -p "$RUNNER_TEMP/bin"
+          mkdir -p "$RUNNER_TEMP/bin" reports metrics
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP/bin" gitleaks
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -289,6 +290,7 @@ jobs:
           name: docker-image
       - name: Démarrer l'API (latence simulée = ${{ env.SIMULATED_LATENCY_MS }} ms)
         run: |
+          mkdir -p reports metrics
           gunzip -c payflex-image.tar.gz | docker load
           docker run -d --name payflex -p 3000:3000 -e SIMULATED_LATENCY_MS -e LOG_LEVEL=warn "$IMAGE"
           for i in $(seq 1 30); do curl -fs http://localhost:3000/health && break; sleep 1; done
@@ -354,6 +356,7 @@ jobs:
           name: docker-image
       - name: Publier la release validée
         run: |
+          mkdir -p reports metrics
           gunzip -c payflex-image.tar.gz | docker load
           docker tag "$IMAGE" payflex-api:production
           docker image ls payflex-api
