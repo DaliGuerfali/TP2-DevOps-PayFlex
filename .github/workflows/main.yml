@@ -44,12 +44,12 @@ jobs:
   # ---------------------------------------------------------------- Étape 2 (source)
   secrets-scan:
     name: "🔐 Confidentialité · source, config & historique Git"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Installer Gitleaks ${{ env.GITLEAKS_VERSION }}
@@ -68,13 +68,13 @@ jobs:
           --location "historique git" --location "code source" --location "configuration"
           --out metrics/confidentiality-source.json
           reports/gitleaks-history.json reports/gitleaks-source.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-confidentiality-source
           path: metrics/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reports-secrets-scan
@@ -84,10 +84,10 @@ jobs:
   # ---------------------------------------------------------------- Étape 1 (UT)
   unit-tests:
     name: "🧪 Tests unitaires & couverture (Jest)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -96,13 +96,13 @@ jobs:
         run: npx jest --ci --coverage
       - name: "Quality Gate · couverture (warning < 80 %, critique < 70 %)"
         run: node scripts/quality-gate/evaluate.js coverage --stage unit-tests --out metrics/coverage.json coverage/coverage-summary.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: coverage-report
           path: coverage/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-coverage
@@ -113,7 +113,7 @@ jobs:
   sonarqube:
     name: "🔎 Analyse statique (SonarQube Community)"
     needs: unit-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       sonarqube:
         image: sonarqube:10.6-community
@@ -125,13 +125,13 @@ jobs:
       SONAR_HOST_URL: http://localhost:9000
       SONAR_PROJECT_KEY: payflex-api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: coverage-report
           path: coverage
@@ -140,6 +140,7 @@ jobs:
       - name: Analyse SonarScanner
         run: |
           docker run --rm --network host \
+            --user "$(id -u):$(id -g)" -e SONAR_USER_HOME=/usr/src/.sonar \
             -e SONAR_HOST_URL -e SONAR_TOKEN \
             -v "$GITHUB_WORKSPACE:/usr/src" \
             "$SONAR_IMAGE_SCANNER" -Dsonar.projectVersion="${GITHUB_SHA::7}" -Dsonar.working.directory=/usr/src/.scannerwork
@@ -147,13 +148,13 @@ jobs:
         run: node scripts/sonar/fetch-results.js reports/sonar.json
       - name: "Quality Gate · bugs bloquants (critique) / code smells (warning)"
         run: node scripts/quality-gate/evaluate.js code-quality --stage sonarqube --out metrics/code-quality.json reports/sonar.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-code-quality
           path: metrics/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reports-sonarqube
@@ -164,10 +165,10 @@ jobs:
   build:
     name: "📦 Build de l'image Docker & scan de l'artefact"
     needs: [secrets-scan, unit-tests, sonarqube]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: "[Démo data-leak] Injection de secrets factices dans le build"
@@ -198,18 +199,18 @@ jobs:
           --out metrics/confidentiality-artifact.json reports/gitleaks-artifact.json
       - name: Sauvegarder l'image validée
         run: docker save "$IMAGE" | gzip > payflex-image.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: docker-image
           path: payflex-image.tar.gz
           retention-days: 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-confidentiality-artifact
           path: metrics/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reports-build
@@ -220,13 +221,13 @@ jobs:
   integration-tests:
     name: "🔗 Tests d'intégration (conteneur éphémère + Newman)"
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: docker-image
       - name: Démarrer l'API dans un conteneur éphémère
@@ -262,13 +263,13 @@ jobs:
       - name: Arrêter le conteneur
         if: always()
         run: docker rm -f payflex || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-integration
           path: metrics/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reports-integration
@@ -279,13 +280,13 @@ jobs:
   performance-tests:
     name: "⚡ Tests de performance (k6)"
     needs: integration-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: docker-image
       - name: Démarrer l'API (latence simulée = ${{ env.SIMULATED_LATENCY_MS }} ms)
@@ -305,13 +306,13 @@ jobs:
       - name: Arrêter le conteneur
         if: always()
         run: docker rm -f payflex || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: metrics-performance
           path: metrics/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: reports-performance
@@ -322,13 +323,13 @@ jobs:
   quality-gate:
     name: "🚦 Quality Gate & rapport d'analyse"
     needs: [secrets-scan, unit-tests, sonarqube, build, integration-tests, performance-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: metrics-*
           path: metrics
@@ -337,7 +338,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: node scripts/quality-gate/report.js --mode gate --metrics metrics --out reports
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: quality-gate-report
@@ -347,11 +348,11 @@ jobs:
     name: "🚀 Déploiement (production simulée)"
     needs: quality-gate
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: production
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: docker-image
       - name: Publier la release validée
@@ -372,13 +373,13 @@ jobs:
     name: "🚨 Rapport d'incident (pipeline interrompu)"
     needs: [secrets-scan, unit-tests, sonarqube, build, integration-tests, performance-tests, quality-gate]
     if: failure()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         continue-on-error: true
         with:
           pattern: metrics-*
@@ -388,7 +389,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: node scripts/quality-gate/report.js --mode incident --metrics metrics --out reports
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: incident-report
           path: reports/

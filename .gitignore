@@ -6,3 +6,4 @@ artifact-fs/
 .scannerwork/
 *.tar.gz
 *.log
+.sonar/
